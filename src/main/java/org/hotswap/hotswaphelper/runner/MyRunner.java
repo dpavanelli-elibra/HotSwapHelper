@@ -10,16 +10,14 @@ import com.intellij.openapi.application.ApplicationManager;
 import com.intellij.openapi.project.Project;
 import com.intellij.openapi.projectRoots.Sdk;
 import com.intellij.openapi.ui.Messages;
-import lombok.val;
+import org.apache.commons.io.FileUtils;
 import org.apache.commons.lang3.StringUtils;
 import org.hotswap.hotswaphelper.CheckResult;
 import org.hotswap.hotswaphelper.JdkManager;
 import org.hotswap.hotswaphelper.settings.HotSwapHelperPluginSettingsProvider;
 import org.hotswap.hotswaphelper.ui.JdkNotSupportedDialog;
 import org.hotswap.hotswaphelper.utils.MyUtils;
-import org.apache.commons.io.FileUtils;
 import org.jetbrains.annotations.NotNull;
-import org.jetbrains.jps.model.java.JdkVersionDetector;
 
 import java.io.File;
 import java.io.InputStream;
@@ -35,7 +33,11 @@ public interface MyRunner {
             Sdk jdk1 = javaParameters.getJdk();
             String homePath1 = jdk1.getHomePath();
             //todo maybe parse it from versionString?
-            CheckResult result = JdkManager.checkJdkHome(homePath1);
+
+            Project project = ((RunConfiguration) runProfile).getProject();
+            HotSwapHelperPluginSettingsProvider.State hotSwapHelperPluginSettings = HotSwapHelperPluginSettingsProvider.Companion.getInstance(project).getCurrentState();
+
+            CheckResult result = JdkManager.checkJdkHome(homePath1, hotSwapHelperPluginSettings);
             Sdk jdk = javaParameters.getJdk();
             //get user jdk version. if this is from dcevm jdk, add the agent to it.
 //            String jdkPath = javaParameters.getJdkPath();
@@ -47,9 +49,7 @@ public interface MyRunner {
             if (!(runProfile instanceof JavaTestConfigurationBase)) {
                 int javaVersion = result.getJavaVersion();
 
-                Project project = ((RunConfiguration) runProfile).getProject();
-                HotSwapHelperPluginSettingsProvider.State currentState = HotSwapHelperPluginSettingsProvider.Companion.getInstance(project).getCurrentState();
-                boolean useExternalHotSwapAgentFile = currentState.getUseExternalHotSwapAgentFile();
+                boolean useExternalHotSwapAgentFile = hotSwapHelperPluginSettings.getUseExternalHotSwapAgentFile();
                 if (!useExternalHotSwapAgentFile) {
                     if (javaVersion == 8) {
                         File agentFile = MyUtils.getHotSwapJarPath();
@@ -59,15 +59,15 @@ public interface MyRunner {
                                 public void run() {
                                     Messages.showErrorDialog(((RunConfiguration) runProfile).getProject(),
                                             "HotSwap agent jar not found," +
-                                            "please check your folder:" + agentFile.getAbsolutePath() + " is there exist " +
-                                            "hotswap-agent.jar" +
-                                            "https://github.com/gejun123456/HotSwapIntellij", "HotSwap Agent Jar Not Found");
+                                                    "please check your folder:" + agentFile.getAbsolutePath() + " is there exist " +
+                                                    "hotswap-agent.jar" +
+                                                    "https://github.com/gejun123456/HotSwapIntellij", "HotSwap Agent Jar Not Found");
                                 }
                             });
                             return;
                         } else {
                             javaParameters.getVMParametersList().addParametersString("-XXaltjvm=dcevm");
-                            javaParameters.getVMParametersList().addParametersString("-javaagent:\"" + agentFile.getAbsolutePath()+"\"");
+                            javaParameters.getVMParametersList().addParametersString("-javaagent:\"" + agentFile.getAbsolutePath() + "\"");
                         }
                     } else if (javaVersion == 11) {
                         //check if jbr?
@@ -84,16 +84,11 @@ public interface MyRunner {
                     }
                 } else {
                     // use external mode?
-                    String agentPath = currentState.getAgentPath();
+                    String agentPath = hotSwapHelperPluginSettings.getAgentPath();
                     File agentFile = new File(agentPath);
                     if (!agentFile.exists()) {
-                        ApplicationManager.getApplication().invokeLater(new Runnable() {
-                            @Override
-                            public void run() {
-                                Messages.showErrorDialog(((RunConfiguration) runProfile).getProject(),
-                                        "HotSwap agent jar not found in path:" + agentFile.getAbsolutePath(), "Error");
-                            }
-                        });
+                        ApplicationManager.getApplication().invokeLater(() -> Messages.showErrorDialog(((RunConfiguration) runProfile).getProject(),
+                                "HotSwap agent jar not found in path:" + agentFile.getAbsolutePath(), "Error"));
                         return;
                     }
                     javaParameters.getVMParametersList().addParametersString("-javaagent:\"" + agentFile.getAbsolutePath() + "\"");
@@ -112,10 +107,10 @@ public interface MyRunner {
                     }
 
                 }
-                Set<String> disabledPlugins = currentState.getDisabledPlugins();
-                if(!disabledPlugins.isEmpty()){
+                Set<String> disabledPlugins = hotSwapHelperPluginSettings.getDisabledPlugins();
+                if (!disabledPlugins.isEmpty()) {
                     String join = Joiner.on(",").join(disabledPlugins);
-                    if(StringUtils.isNotBlank(join)) {
+                    if (StringUtils.isNotBlank(join)) {
                         javaParameters.getVMParametersList().addParametersString("-Dhotswapagent.disablePlugin=" + join);
                     }
                 }
@@ -138,6 +133,10 @@ public interface MyRunner {
         if (currentState == null) {
             return true;
         }
+        Project project = environment.getProject();
+        HotSwapHelperPluginSettingsProvider.State hotSwapHelperPluginSettings = HotSwapHelperPluginSettingsProvider.Companion.getInstance(project).getCurrentState();
+        boolean useExternalHotSwapAgentFile = hotSwapHelperPluginSettings.getUseExternalHotSwapAgentFile();
+
         if (currentState instanceof JavaCommandLine) {
             JavaCommandLine theline = (JavaCommandLine) currentState;
             JavaParameters javaParameters = theline.getJavaParameters();
@@ -147,19 +146,14 @@ public interface MyRunner {
                 throw new CantRunException("please select jdk");
             }
             //add setting to not check jdk.
-            CheckResult result = JdkManager.checkJdkHome(homePath);
+            CheckResult result = JdkManager.checkJdkHome(homePath, hotSwapHelperPluginSettings);
             if (!result.isHasFound()) {
-                ApplicationManager.getApplication().invokeLater(new Runnable() {
-                    @Override
-                    public void run() {
-                        JdkNotSupportedDialog dialog = new JdkNotSupportedDialog(environment.getProject(), true, result.getErrorText());
-                        dialog.show();
-                    }
+                ApplicationManager.getApplication().invokeLater(() -> {
+                    JdkNotSupportedDialog dialog = new JdkNotSupportedDialog(environment.getProject(), true, result.getErrorText());
+                    dialog.show();
                 });
                 return true;
             }
-            Project project = environment.getProject();
-            boolean useExternalHotSwapAgentFile = HotSwapHelperPluginSettingsProvider.Companion.getInstance(project).getCurrentState().getUseExternalHotSwapAgentFile();
             //copy the hotwap agent file to the folder if 11 or 17.
             if (result.getJavaVersion() > 8 && !useExternalHotSwapAgentFile) {
                 try {
